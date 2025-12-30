@@ -14,15 +14,9 @@ Softmax of a batch of logits.
 Uses one program block axis. Block size `B0` represents the batch of `x` of length `N0`.
 Block logit length `T`.   Process it `B1 < T` elements at a time.  
 
-$$z_{i, j} = \text{softmax}(x_{i,1} \ldots x_{i, T}) \text{ for } i = 1\ldots N_0$$
-
 Note softmax needs to be computed in numerically stable form as in Python. In addition in Triton they recommend not using `exp` but instead using `exp2`. You need the identity
 
-$$\exp(x) = 2^{\log_2(e) x}$$
-
 Advanced: there one way to do this with 3 loops. You can also do it with 2 loops if you are clever. Hint: you will find this identity useful:
-
-$$\exp(x_i - m) =  \exp(x_i - m/2 - m/2) = \exp(x_i - m/ 2) /  \exp(m/2) $$
 """
 
 
@@ -86,4 +80,5 @@ test(
     softmax_spec,
     B={"B0": 1, "B1": 32},
     nelem={"N0": 4, "N1": 32, "T": 200},
+    ptx=True,
 )

@@ -3,7 +3,7 @@ import torch
 import triton
 
 
-def test(puzzle, puzzle_spec, nelem={}, B={"B0": 32}):
+def test(puzzle, puzzle_spec, nelem={}, B={"B0": 32}, ptx=False):
     B = dict(B)
     if "N1" in nelem and "B1" not in B:
         B["B1"] = 32
@@ -31,6 +31,13 @@ def test(puzzle, puzzle_spec, nelem={}, B={"B0": 32}):
     )
 
     puzzle[grid](*tt_args, **B, **nelem)
+    if ptx:
+        device = torch.cuda.current_device()
+        cache_tuple = puzzle.device_caches[device]
+        cache_dict = cache_tuple[0]  # The actual cache dictionary
+        compiled_kernel = list(cache_dict.values())[0]
+        print(compiled_kernel.asm["ptx"])
+
     z = tt_args[-1]
     tt_args = tt_args[:-1]
 
