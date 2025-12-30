@@ -4,6 +4,7 @@ from torch import Tensor
 import triton.language as tl
 from jaxtyping import Float32, Int32
 from main import test
+import math
 
 
 """
@@ -24,6 +25,20 @@ def sum_spec(x: Float32[Tensor, "4 200"]) -> Float32[Tensor, "4"]:
 
 @triton.jit
 def sum_kernel(x_ptr, z_ptr, N0, N1, T, B0: tl.constexpr, B1: tl.constexpr):
+    # [4 rows, 200 columns]
+    # single program block, each block is dealing with a single row
+    pid_0 = tl.program_id(0)
+    # inside the loop, load 32 values, process
+    z = 0.0
+    for i in range(tl.cdiv(T, B1)):
+        row_off = pid_0 * T
+        col_off = i * B1 + tl.arange(0, B1)
+
+        x = tl.load(x_ptr + (row_off + col_off), col_off < T)
+        z += tl.sum(x)
+
+    z_range = pid_0 + tl.arange(0, B0)
+    tl.store(z_ptr + z_range, z)
     return
 
 
