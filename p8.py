@@ -4,7 +4,6 @@ from torch import Tensor
 import triton.language as tl
 from jaxtyping import Float32, Int32
 from main import test
-import math
 
 """
 ## Puzzle 8: Long Softmax
@@ -27,6 +26,30 @@ def softmax_spec(x: Float32[Tensor, "4 200"]) -> Float32[Tensor, "4 200"]:
     return x_exp / x_exp.sum(1, keepdim=True)
 
 
+"""
+Online softmax allows us to go from 3 loops to 2
+Pass 1: Compute max AND sum together
+    m = -∞
+    d = 0  (running sum of exponentials)
+    
+    for i in range(n):
+        m_new = max(m, x[i])
+        d = d * exp(m - m_new) + exp(x[i] - m_new)
+        m = m_new
+
+Pass 2: Compute outputs
+    for i in range(n):
+        output[i] = exp(x[i] - m) / d
+
+
+Rescaling works because e^(xi - 2) = e^(xi - 5) * e^3
+So 2 is old max, 5 is new max
+We scale the currently denominator by the diff between maxes.
+new max > old max
+so value is negative, e^neg is [0,1], so scales old denom down.
+"""
+
+
 @triton.jit
 def softmax_kernel(x_ptr, z_ptr, N0, N1, T, B0: tl.constexpr, B1: tl.constexpr):
     # [4 rows, 200 columns]
@@ -34,34 +57,30 @@ def softmax_kernel(x_ptr, z_ptr, N0, N1, T, B0: tl.constexpr, B1: tl.constexpr):
     pid_0 = tl.program_id(0)
     log2_e = 1.44269504
 
-    # Compute x_max
     x_max = float("-inf")
-    for i in range(tl.cdiv(T, B1)):
+    denom = 0.0
+    for i in tl.range(tl.cdiv(T, B1)):
         row_off = pid_0 * T
         col_off = i * B1 + tl.arange(0, B1)
 
         x = tl.load(x_ptr + (row_off + col_off), col_off < T)
-        x_max = tl.maximum(tl.max(x), x_max)
+        x_nmax = tl.maximum(tl.max(x), x_max)  # potentially new maximum
 
-    # x_max is now max across all 200 vals
+        # rescale denom
+        scale_factor = tl.exp(x_max - x_nmax)
 
-    x_exp_sum = 0.0
-    for i in range(tl.cdiv(T, B1)):
-        row_off = pid_0 * T
-        col_off = i * B1 + tl.arange(0, B1)
+        denom = denom * scale_factor + tl.sum(tl.exp2(log2_e * (x - x_nmax)))
+        x_max = x_nmax
 
-        x = tl.load(x_ptr + (row_off + col_off), col_off < T)
-        x = tl.exp2(log2_e * (x - x_max))
-        x_exp_sum += tl.sum(x)
-
+    # This pass is unavoidable
     # Compute x_exp / x_exp_sum
-    for i in range(tl.cdiv(T, B1)):
+    for i in tl.range(tl.cdiv(T, B1)):
         row_off = pid_0 * T
         col_off = i * B1 + tl.arange(0, B1)
         x = tl.load(x_ptr + (row_off + col_off), col_off < T)
 
         x_exp = tl.exp2(log2_e * (x - x_max))
-        z = x_exp / x_exp_sum
+        z = x_exp / denom
         tl.store(z_ptr + (row_off + col_off), z, col_off < T)
 
     return
