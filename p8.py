@@ -43,34 +43,26 @@ def softmax_kernel(x_ptr, z_ptr, N0, N1, T, B0: tl.constexpr, B1: tl.constexpr):
         x = tl.load(x_ptr + (row_off + col_off), col_off < T)
         x_max = tl.maximum(tl.max(x), x_max)
 
-    # Compute x - x_max
-    for i in range(tl.cdiv(T, B1)):
-        row_off = pid_0 * T
-        col_off = i * B1 + tl.arange(0, B1)
+    # x_max is now max across all 200 vals
 
-        x = tl.load(x_ptr + (row_off + col_off), col_off < T)
-        x = tl.exp((x - x_max))
-        # need to store back
-        tl.store(x_ptr + (row_off + col_off), x, col_off < T)
-
-    # sum x_exp
     x_exp_sum = 0.0
     for i in range(tl.cdiv(T, B1)):
         row_off = pid_0 * T
         col_off = i * B1 + tl.arange(0, B1)
 
         x = tl.load(x_ptr + (row_off + col_off), col_off < T)
+        x = tl.exp2(log2_e * (x - x_max))
         x_exp_sum += tl.sum(x)
 
     # Compute x_exp / x_exp_sum
     for i in range(tl.cdiv(T, B1)):
         row_off = pid_0 * T
         col_off = i * B1 + tl.arange(0, B1)
-
         x = tl.load(x_ptr + (row_off + col_off), col_off < T)
-        x /= x_exp_sum
 
-        tl.store(z_ptr + (row_off + col_off), x, col_off < T)
+        x_exp = tl.exp2(log2_e * (x - x_max))
+        z = x_exp / x_exp_sum
+        tl.store(z_ptr + (row_off + col_off), z, col_off < T)
 
     return
 
@@ -80,5 +72,4 @@ test(
     softmax_spec,
     B={"B0": 1, "B1": 32},
     nelem={"N0": 4, "N1": 32, "T": 200},
-    ptx=True,
 )
