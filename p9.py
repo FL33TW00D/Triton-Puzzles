@@ -92,7 +92,7 @@ def flashatt_kernel(
         v_range = j + tl.arange(0, B1)
         v = tl.load(v_ptr + v_range, v_range < T)
 
-        z = z + tl.sum(qk_exp * v[None, :], axis=1)
+        z += tl.sum(qk_exp * v[None, :], axis=1)
 
         denom = nd
         qk_max = qk_nmax
