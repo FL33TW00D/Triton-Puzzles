@@ -51,6 +51,14 @@ for j in range(0, T, B1):
     Outer product of q and k first
     
 # Store final result
+
+This program varies a little from the actual FA paper, in that we load a block of Q then iterate over blocks of KV.
+In FA, the loop order is inverted: https://github.com/AmineDiro/nano-llama-flash/blob/main/kernels/triton_flash_att.py#L52
+
+One thing that confused me: how can FA be a "superset" of online softmax, but only require 1 loop whereas online softmax
+requires 2?
+The key thing is that we are doing a reduction here, so all of the values are folded into the output. We no longer
+need the second loop and can just divide by the "true" denominator at the end.
 """
 
 
@@ -65,46 +73,31 @@ def flashatt_kernel(
 
     # Compute maximum of qk products
     qk_max = tl.full((B0,), -math.inf, dtype=tl.float32)
-    for j in range(0, T, B1):
-        k_range = j + tl.arange(0, B1)
-        k = tl.load(k_ptr + k_range, k_range < T)
-
-        qk = q[:, None] * k[None, :]  # [B0, B1] -> [64, 32]
-        # partial k product means we need to complete all blocks to get the max
-        qk_max = tl.maximum(qk_max, tl.max(qk, axis=1))
-
     denom = tl.zeros((B0,), dtype=tl.float32)
-    # Compute denominator sum(exp((qk-qk_max))
+    z = tl.zeros((B0,), dtype=tl.float32)
+
     for j in range(0, T, B1):
         k_range = j + tl.arange(0, B1)
         k = tl.load(k_ptr + k_range, k_range < T)
 
-        v_range = j + tl.arange(0, B1)
-        v = tl.load(v_ptr + v_range, v_range < T)
-
         qk = q[:, None] * k[None, :]  # [B0, B1] -> [64, 32]
-        # Triton by default uses 0.0 as the mask value
         qk = tl.where((k_range < T)[None, :], qk, float("-inf"))
 
-        denom += tl.sum(tl.exp(qk - qk_max[:, None]), axis=1)
+        qk_nmax = tl.maximum(qk_max, tl.max(qk, axis=1))
+        qk_exp = tl.exp(qk - qk_nmax[:, None])
 
-    # Now do ((exp(qk - qk_max) / denom) * vi)
-    z = tl.zeros((B0,), dtype=tl.float32)
-    for j in range(0, T, B1):
-        k_range = j + tl.arange(0, B1)
-        k = tl.load(k_ptr + k_range, k_range < T)
+        scale_factor = tl.exp(qk_max - qk_nmax)
+        nd = denom * scale_factor + tl.sum(qk_exp, axis=1)
 
         v_range = j + tl.arange(0, B1)
         v = tl.load(v_ptr + v_range, v_range < T)
 
-        qk = q[:, None] * k[None, :]  # [B0, B1] -> [64, 32]
+        z = z + tl.sum(qk_exp * v[None, :], axis=1)
 
-        weights = tl.exp(qk - qk_max[:, None]) / denom[:, None]  # [B0, B1]
+        denom = nd
+        qk_max = qk_nmax
 
-        z += tl.sum(weights * v[None, :], axis=1)
-
-    # now write it out
-    tl.store(z_ptr + q_range, z, mask=q_range < N0)
+    tl.store(z_ptr + q_range, z / denom, mask=q_range < N0)
 
     return
 

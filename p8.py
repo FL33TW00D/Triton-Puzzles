@@ -72,7 +72,7 @@ def softmax_kernel(x_ptr, z_ptr, N0, N1, T, B0: tl.constexpr, B1: tl.constexpr):
         x_max = x_nmax
 
     # This pass is unavoidable
-    # Compute x_exp / x_exp_sum
+    # Compute x_exp / denom
     for i in tl.range(tl.cdiv(T, B1)):
         row_off = pid_0 * T
         col_off = i * B1 + tl.arange(0, B1)
