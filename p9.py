@@ -34,8 +34,78 @@ def flashatt_spec(
     return (v[None, :] * soft).sum(1)
 
 
+"""
+pid = tl.program_id(0)
+
+q_batch = ...  # shape: (B0,)
+
+# Initialize accumulators for online softmax
+# (what do you need to track?)
+
+# Actual loop over ALL keys/values, B1 at a time
+for j in range(0, T, B1):
+    # Load chunk of keys and values
+    k_chunk = ...  # shape: (B1,)
+    v_chunk = ...  # shape: (B1,)
+    
+    Outer product of q and k first
+    
+# Store final result
+"""
+
+
 @triton.jit
-def flashatt_kernel(q_ptr, k_ptr, v_ptr, z_ptr, N0, T, B0: tl.constexpr):
+def flashatt_kernel(
+    q_ptr, k_ptr, v_ptr, z_ptr, N0, T, B0: tl.constexpr, B1: tl.constexpr
+):
+    pid = tl.program_id(0)
+
+    q_range = pid * B0 + tl.arange(0, B0)
+    q = tl.load(q_ptr + q_range, q_range < N0)
+
+    # Compute maximum of qk products
+    qk_max = tl.full((B0,), -math.inf, dtype=tl.float32)
+    for j in range(0, T, B1):
+        k_range = j + tl.arange(0, B1)
+        k = tl.load(k_ptr + k_range, k_range < T)
+
+        qk = q[:, None] * k[None, :]  # [B0, B1] -> [64, 32]
+        # partial k product means we need to complete all blocks to get the max
+        qk_max = tl.maximum(qk_max, tl.max(qk, axis=1))
+
+    denom = tl.zeros((B0,), dtype=tl.float32)
+    # Compute denominator sum(exp((qk-qk_max))
+    for j in range(0, T, B1):
+        k_range = j + tl.arange(0, B1)
+        k = tl.load(k_ptr + k_range, k_range < T)
+
+        v_range = j + tl.arange(0, B1)
+        v = tl.load(v_ptr + v_range, v_range < T)
+
+        qk = q[:, None] * k[None, :]  # [B0, B1] -> [64, 32]
+        # Triton by default uses 0.0 as the mask value
+        qk = tl.where((k_range < T)[None, :], qk, float("-inf"))
+
+        denom += tl.sum(tl.exp(qk - qk_max[:, None]), axis=1)
+
+    # Now do ((exp(qk - qk_max) / denom) * vi)
+    z = tl.zeros((B0,), dtype=tl.float32)
+    for j in range(0, T, B1):
+        k_range = j + tl.arange(0, B1)
+        k = tl.load(k_ptr + k_range, k_range < T)
+
+        v_range = j + tl.arange(0, B1)
+        v = tl.load(v_ptr + v_range, v_range < T)
+
+        qk = q[:, None] * k[None, :]  # [B0, B1] -> [64, 32]
+
+        weights = tl.exp(qk - qk_max[:, None]) / denom[:, None]  # [B0, B1]
+
+        z += tl.sum(weights * v[None, :], axis=1)
+
+    # now write it out
+    tl.store(z_ptr + q_range, z, mask=q_range < N0)
+
     return
 
 

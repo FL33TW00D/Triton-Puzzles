@@ -41,7 +41,6 @@ Pass 2: Compute outputs
     for i in range(n):
         output[i] = exp(x[i] - m) / d
 
-
 Rescaling works because e^(xi - 2) = e^(xi - 5) * e^3
 So 2 is old max, 5 is new max
 We scale the currently denominator by the diff between maxes.
